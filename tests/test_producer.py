@@ -5,8 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "producer"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "flink", "jobs"))
-from order_logic import STATUS_RANK, parse_event  # noqa: E402
-from producer import OrderSimulator, make_bad_message  # noqa: E402
+from order_logic import STATUS_RANK, parse_event
+from producer import OrderSimulator, make_bad_message
 
 
 def drain(sim, orders):

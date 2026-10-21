@@ -4,7 +4,7 @@ import sys
 from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "flink", "jobs"))
-from order_logic import day_bucket, merge_status, money, parse_event, to_utc  # noqa: E402
+from order_logic import day_bucket, merge_status, money, parse_event, to_utc
 
 GOOD = {"event_id": "e1", "order_id": 7, "customer_id": 1001, "restaurant_id": 101, "city": "Pune",
         "amount": 250.5, "status": "placed ", "placed_at": 1_700_000_000_000, "event_time": 1_700_000_060_000}
@@ -31,9 +31,9 @@ def test_bad_events_get_a_reason():
 
 def test_status_never_moves_backwards():
     assert merge_status(None, "ACCEPTED") == "ACCEPTED"
-    assert merge_status("PICKED_UP", "ACCEPTED") == "PICKED_UP"   # late event
-    assert merge_status("ACCEPTED", "DELIVERED") == "DELIVERED"   # skipped a step: fine
-    assert merge_status("DELIVERED", "CANCELLED") == "DELIVERED"  # first terminal status wins
+    assert merge_status("PICKED_UP", "ACCEPTED") == "PICKED_UP"
+    assert merge_status("ACCEPTED", "DELIVERED") == "DELIVERED"
+    assert merge_status("DELIVERED", "CANCELLED") == "DELIVERED"
     assert merge_status("CANCELLED", "DELIVERED") == "CANCELLED"
 
 

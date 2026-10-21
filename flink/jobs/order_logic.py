@@ -35,7 +35,6 @@ def parse_event(raw: str):
     for field, kind in REQUIRED.items():
         if field not in event or event[field] is None:
             return None, f"missing_{field}"
-        # bool is a subclass of int in Python, so reject it explicitly
         if isinstance(event[field], bool) or not isinstance(event[field], kind):
             return None, f"bad_type_{field}"
     event["status"] = event["status"].strip().upper()

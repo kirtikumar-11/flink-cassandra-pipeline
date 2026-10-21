@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 WALKTHROUGH.md
 docs/
+.env.example

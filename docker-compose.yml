@@ -1,7 +1,3 @@
-# Whole stack on one laptop: Kafka (KRaft, no ZooKeeper) + Cassandra + Flink (1 JobManager, 1 TaskManager).
-#   docker compose up -d --build
-# Ports on your laptop: Kafka localhost:9094, Cassandra localhost:9042, Flink UI http://localhost:8081
-
 x-flink-config: &flink-config
   FLINK_PROPERTIES: |
     jobmanager.rpc.address: jobmanager
@@ -28,7 +24,6 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      # "kafka:9092" for containers, "localhost:9094" for the producer running on your laptop
       KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
@@ -94,13 +89,13 @@ services:
       <<: *flink-config
     volumes:
       - flink-data:/flink-data
-      - ./flink/jobs:/opt/jobs        # edit the job on your laptop, re-submit, no rebuild needed
+      - ./flink/jobs:/opt/jobs
     depends_on:
       kafka-init: { condition: service_completed_successfully }
       cassandra-init: { condition: service_completed_successfully }
 
   taskmanager:
-    build: ./flink           # same image as the jobmanager (built once, then cached)
+    build: ./flink
     image: order-flink:1.20
     command: taskmanager
     environment:
@@ -111,9 +106,6 @@ services:
     depends_on:
       - jobmanager
 
-  # Runs the producer and the verify script inside Docker, so nothing has to be installed on your laptop:
-  #   docker compose run --rm tools producer/producer.py --orders 300
-  #   docker compose run --rm tools scripts/verify.py
   tools:
     build: ./flink
     image: order-flink:1.20

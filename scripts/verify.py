@@ -17,15 +17,14 @@ from cassandra.cluster import Cluster
 from confluent_kafka import Consumer, TopicPartition
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "flink", "jobs"))
-from order_logic import TERMINAL, merge_status, money, parse_event  # noqa: E402
+from order_logic import TERMINAL, merge_status, money, parse_event
 
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9094")
 TOPIC = os.getenv("KAFKA_TOPIC", "order-events")
 SLA_MS = int(os.getenv("SLA_MINUTES", "45")) * 60_000
 OUT_OF_ORDER_MS = int(os.getenv("OUT_OF_ORDER_SECONDS", "30")) * 1000
 LATENESS_MS = int(os.getenv("ALLOWED_LATENESS_SECONDS", "60")) * 1000
-MARGIN_MS = 2 * 60_000  # ignore the last couple of minutes before the final watermark
-# Flink emits watermarks every 200 ms of real time; with --speed 600 that is 2 simulated minutes.
+MARGIN_MS = 2 * 60_000
 AMBIGUOUS_MS = int(os.getenv("VERIFY_AMBIGUOUS_SECONDS", "180")) * 1000
 
 
@@ -74,7 +73,7 @@ def expected(by_partition):
         if e is None:
             stats["bad"] += 1
             continue
-        wm = watermark()  # watermark before this event is processed
+        wm = watermark()
         partition_max[p] = max(partition_max.get(p, e["event_time"]), e["event_time"])
         if e["event_id"] in seen:
             stats["duplicates"] += 1
@@ -88,7 +87,7 @@ def expected(by_partition):
         if new in TERMINAL and oid not in terminal_wm:
             terminal_wm[oid] = wm
         win_start = e["event_time"] - e["event_time"] % 60_000
-        if e["event_time"] < wm:  # arrived behind the watermark: exact outcome depends on timing
+        if e["event_time"] < wm:
             windows_with_late_data.add((e["restaurant_id"], win_start))
         if wm >= win_start + 60_000 - 1 + LATENESS_MS:
             stats["too_late_for_window"] += 1
@@ -127,9 +126,6 @@ def main():
     if by_customer != len(status):
         problems.append(f"orders_by_customer has {by_customer} rows, expected {len(status)}")
 
-    # SLA: the timer fires when the watermark passes placed_at + SLA. If the order finished while its
-    # partition's watermark was still before that, no alert; if it finished clearly after, an alert.
-    # Orders that finished close to their deadline depend on exact timing across partitions: skipped.
     due = {o for o, e in info.items() if e["placed_at"] + SLA_MS <= cutoff}
     expected_breaches, ambiguous = set(), set()
     for o in due:
@@ -163,8 +159,6 @@ def main():
             if len(problems) > 10:
                 break
     late_rows = session.execute("SELECT count(*) FROM late_events_by_day").one()[0]
-    # Whether a late event is dropped depends on how far the watermark had moved when it arrived
-    # (watermarks are emitted every 200 ms of real time), so allow a small difference here.
     if not 0.9 * stats["too_late_for_window"] <= late_rows <= stats["too_late_for_window"]:
         problems.append(f"late_events_by_day has {late_rows}, expected about {stats['too_late_for_window']}")
 

@@ -31,7 +31,7 @@ import uuid
 
 from confluent_kafka import Consumer, Producer, TopicPartition
 
-try:  # optional: read settings from a .env file
+try:
     from dotenv import find_dotenv, load_dotenv
 
     load_dotenv(find_dotenv(usecwd=True))
@@ -45,15 +45,15 @@ LATE_BY_MS = 10 * 60_000
 def build_config() -> dict:
     config = {
         "bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9094"),
-        "acks": "all",                 # wait for all in-sync replicas
-        "enable.idempotence": True,    # broker drops the producer's own retries
+        "acks": "all",
+        "enable.idempotence": True,
         "linger.ms": 20,
         "compression.type": "lz4",
         "client.id": "food-order-producer",
         "broker.address.family": os.getenv("KAFKA_ADDRESS_FAMILY", "any"),
     }
     protocol = os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
-    if protocol != "PLAINTEXT":  # e.g. Aiven: SASL_SSL with SCRAM, credentials only from the environment
+    if protocol != "PLAINTEXT":
         config.update({
             "security.protocol": protocol,
             "sasl.mechanism": os.getenv("KAFKA_SASL_MECHANISM", "SCRAM-SHA-256"),
@@ -74,14 +74,14 @@ class OrderSimulator:
         self.gap_ms = 60_000 / orders_per_minute
         self.cancel_ratio, self.stuck_ratio, self.late_ratio = cancel_ratio, stuck_ratio, late_ratio
         self.next_order_id = start_ms % 10_000_000_000
-        self.queue = []  # heap of (send_at_ms, seq, event)
+        self.queue = []
         self.seq = 0
         self.late_events = 0
 
     def _schedule(self, event):
         send_at = event["event_time"]
         if self.rng.random() < self.late_ratio:
-            send_at += LATE_BY_MS  # arrives late, but keeps its original event_time
+            send_at += LATE_BY_MS
             self.late_events += 1
         heapq.heappush(self.queue, (send_at, self.seq, event))
         self.seq += 1
@@ -108,11 +108,11 @@ class OrderSimulator:
         else:
             accepted = placed + rng.randint(1, 4) * minute
             picked = accepted + rng.randint(8, 20) * minute
-            delivered = picked + rng.randint(8, 25) * minute   # some take longer than the 45 min SLA
+            delivered = picked + rng.randint(8, 25) * minute
             steps.append(("ACCEPTED", accepted))
             if roll < self.cancel_ratio + self.stuck_ratio:
                 if rng.random() < 0.5:
-                    steps.append(("PICKED_UP", picked))      # stuck with the rider, never delivered
+                    steps.append(("PICKED_UP", picked))
             else:
                 steps += [("PICKED_UP", picked), ("DELIVERED", delivered)]
         for status, at in steps:
@@ -141,7 +141,6 @@ def resume_clock(config: dict, topic: str) -> int:
     try:
         for p in consumer.list_topics(topic, timeout=10).topics[topic].partitions:
             low, high = consumer.get_watermark_offsets(TopicPartition(topic, p), timeout=10)
-            # look at the last few messages (the very last one may be a bad message or a dup)
             consumer.assign([TopicPartition(topic, p, max(low, high - 20))])
             for _ in range(min(20, high - low)):
                 msg = consumer.poll(5)
@@ -212,7 +211,7 @@ def main():
                 producer.produce(topic, key=key, value=value, on_delivery=on_delivery)
                 break
             except BufferError:
-                producer.poll(0.5)  # local queue full: let it drain
+                producer.poll(0.5)
         stats["sent"] += 1
         producer.poll(0)
 
@@ -228,19 +227,18 @@ def main():
         if item is None:
             break
         send_at, event = item
-        if args.speed > 0:  # wait until the simulated clock reaches this event
+        if args.speed > 0:
             wait = (send_at - start_ms) / 1000 / args.speed - (time.perf_counter() - real_start)
             if wait > 0:
                 time.sleep(wait)
         if event["status"] == "PLACED":
             stats["orders"] += 1
         max_event_time = max(max_event_time, event["event_time"])
-        # Key = order_id: all events of one order go to the same partition, in order.
         key, value = str(event["order_id"]).encode(), json.dumps(event).encode()
         send(key, value)
         last_good = (key, value)
         if rng.random() < args.dup_ratio:
-            send(*last_good)  # exact same bytes, same event_id
+            send(*last_good)
             stats["dups"] += 1
         if rng.random() < args.bad_ratio:
             send(b"bad", make_bad_message(rng))

@@ -45,7 +45,6 @@ from pyflink.datastream.window import TumblingEventTimeWindows
 
 from order_logic import TERMINAL, day_bucket, merge_status, money, parse_event, to_utc
 
-# ---------------------------------------------------------------- settings (env vars, no secrets in code)
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 SOURCE_TOPIC = os.getenv("KAFKA_TOPIC", "order-events")
 ALERT_TOPIC = os.getenv("ALERT_TOPIC", "order-alerts")
@@ -55,7 +54,7 @@ CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 CASSANDRA_PORT = int(os.getenv("CASSANDRA_PORT", "9042"))
 KEYSPACE = os.getenv("CASSANDRA_KEYSPACE", "food_delivery")
 SLA_MINUTES = int(os.getenv("SLA_MINUTES", "45"))
-OUT_OF_ORDER_SECONDS = int(os.getenv("OUT_OF_ORDER_SECONDS", "30"))   # watermark delay
+OUT_OF_ORDER_SECONDS = int(os.getenv("OUT_OF_ORDER_SECONDS", "30"))
 ALLOWED_LATENESS_SECONDS = int(os.getenv("ALLOWED_LATENESS_SECONDS", "60"))
 CHECKPOINT_MS = int(os.getenv("CHECKPOINT_INTERVAL_MS", "10000"))
 
@@ -80,8 +79,6 @@ def kafka_security_properties() -> dict:
     return props
 
 
-# ---------------------------------------------------------------- row types for the Java sinks
-# Cassandra binds fields by position, in the same order as the "?" in each INSERT.
 ORDER_ROW = Types.ROW([Types.LONG(), Types.STRING(), Types.LONG(), Types.LONG(), Types.STRING(),
                        Types.BIG_DEC(), Types.SQL_TIMESTAMP(), Types.SQL_TIMESTAMP()])
 CUSTOMER_ROW = Types.ROW([Types.LONG(), Types.SQL_TIMESTAMP(), Types.LONG(), Types.STRING(),
@@ -112,7 +109,6 @@ ALERT_TAG = OutputTag("sla-alerts", ALERT_ROW)
 LATE_TAG = OutputTag("late-events", Types.PICKLED_BYTE_ARRAY())
 
 
-# ---------------------------------------------------------------- operators
 class ParseEvents(ProcessFunction):
     """Valid events continue as dicts; bad ones leave through a side output with the reason."""
 
@@ -134,24 +130,19 @@ class OrderTracker(KeyedProcessFunction):
     snapshots it in every checkpoint, so after a crash it continues with exactly this state."""
 
     def open(self, runtime_context):
-        # One state object per order: {"status", "order" (first event), "seen" (event_ids)}.
-        # One read + at most one write per event matters in PyFlink: every state access is a
-        # round trip between the Python worker and the Java state backend.
         descriptor = ValueStateDescriptor("order_state", Types.PICKLED_BYTE_ARRAY())
-        descriptor.enable_time_to_live(StateTtlConfig.new_builder(Time.days(2)).build())  # forget old orders
+        descriptor.enable_time_to_live(StateTtlConfig.new_builder(Time.days(2)).build())
         self.state = runtime_context.get_state(descriptor)
 
     def process_element(self, e, ctx):
         state = self.state.value()
         if state is None:
-            # First event of this order (whatever its status). Arm the SLA timer in EVENT time:
-            # it fires when the watermark passes placed_at + SLA, not after N seconds of wall clock.
             ctx.timer_service().register_event_time_timer(e["placed_at"] + SLA_MINUTES * 60_000)
             state = {"status": None, "order": e, "seen": []}
         elif e["event_id"] in state["seen"]:
-            return  # duplicate delivery: already counted
-        state["seen"].append(e["event_id"])  # an order has at most ~5 distinct events
-        yield e  # unique events feed the per-restaurant windows
+            return
+        state["seen"].append(e["event_id"])
+        yield e
 
         new = merge_status(state["status"], e["status"])
         if new != state["status"]:
@@ -165,7 +156,6 @@ class OrderTracker(KeyedProcessFunction):
         if state is None or state["status"] in TERMINAL:
             return
         o = state["order"]
-        # detected_at = the timer time (deterministic), so a replay writes the same row again
         yield ALERT_TAG, Row(o["city"], day_bucket(timestamp), to_utc(timestamp), o["order_id"],
                              o["restaurant_id"], state["status"], to_utc(o["placed_at"]))
 
@@ -201,7 +191,6 @@ class ToMetricsRow(ProcessWindowFunction):
                   cancelled)
 
 
-# ---------------------------------------------------------------- wiring
 def cassandra_sink(stream, query, name):
     (CassandraSink.add_sink(stream)
      .set_query(query)
@@ -219,7 +208,6 @@ def build(env: StreamExecutionEnvironment):
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_topics(SOURCE_TOPIC)
         .set_group_id(GROUP_ID)
-        # First start: read from the beginning. After that, Flink restores offsets from its checkpoint.
         .set_starting_offsets(KafkaOffsetsInitializer.committed_offsets(KafkaOffsetResetStrategy.EARLIEST))
         .set_value_only_deserializer(SimpleStringSchema())
     )
@@ -240,8 +228,6 @@ def build(env: StreamExecutionEnvironment):
             .set_delivery_guarantee(guarantee)
         )
         if prefix:
-            # Exactly-once to Kafka uses Kafka transactions, committed when a Flink checkpoint completes.
-            # The timeout must stay below the broker's transaction.max.timeout.ms (15 min by default).
             builder.set_transactional_id_prefix(prefix).set_property("transaction.timeout.ms", "600000")
         for key, value in security.items():
             builder.set_property(key, value)
@@ -250,9 +236,6 @@ def build(env: StreamExecutionEnvironment):
     parsed.get_side_output(BAD_TAG).sink_to(kafka_sink(DLQ_TOPIC, DeliveryGuarantee.AT_LEAST_ONCE)) \
         .name("kafka: dead-letter queue").uid("dlq-sink")
 
-    # Watermark = "no events older than this should still arrive" = max event_time seen - 30 s.
-    # No .with_idleness(): every partition gets orders all the time, and in testing idleness kept this
-    # PyFlink watermark from advancing at all. (If a partition can go quiet, test idleness carefully.)
     events = parsed.assign_timestamps_and_watermarks(
         WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(OUT_OF_ORDER_SECONDS))
         .with_timestamp_assigner(EventTime())
@@ -284,7 +267,7 @@ def build(env: StreamExecutionEnvironment):
     metrics = (
         unique_events.key_by(lambda e: e["restaurant_id"], key_type=Types.LONG())
         .window(TumblingEventTimeWindows.of(Time.minutes(1)))
-        .allowed_lateness(ALLOWED_LATENESS_SECONDS * 1000)  # late events re-fire the window: same row upserted
+        .allowed_lateness(ALLOWED_LATENESS_SECONDS * 1000)
         .side_output_late_data(LATE_TAG)
         .aggregate(CountOrders(), window_function=ToMetricsRow(),
                    accumulator_type=Types.PICKLED_BYTE_ARRAY(), output_type=METRICS_ROW)
@@ -301,8 +284,6 @@ def build(env: StreamExecutionEnvironment):
 
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
-    # Checkpoints snapshot Kafka offsets + all keyed state together. On failure Flink rewinds both
-    # to the last checkpoint and replays from Kafka. Storage location comes from the Flink config.
     env.enable_checkpointing(CHECKPOINT_MS, CheckpointingMode.EXACTLY_ONCE)
     env.get_checkpoint_config().set_min_pause_between_checkpoints(5000)
     env.add_python_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_logic.py"))
