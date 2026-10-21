@@ -1,0 +1,7 @@
+.env
+certs/*.pem
+.venv/
+__pycache__/
+.pytest_cache/
+WALKTHROUGH.md
+docs/
